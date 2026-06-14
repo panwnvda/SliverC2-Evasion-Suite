@@ -1,0 +1,19 @@
+# Crystal Palace environment file
+# Copy to .crystalenv and fill in the values before running crystalkit.
+# Lines beginning with # are ignored.
+
+# Required: path to the Crystal Palace distribution directory
+# (the folder that contains crystalpalace.jar)
+CRYSTAL_PALACE_HOME=/opt/crystal-palace
+
+# Optional: path to sliver-server binary
+# Only needed for `crystalkit implant --profile <name>`
+SLIVER_SERVER=/opt/sliver/sliver-server
+
+# Optional: override the path to libtcg.x64.zip
+# Default: crystal-kit-sliver/libtcg.x64.zip inside this repo
+# LIBTCG=/opt/crystal-palace/libtcg.x64.zip
+
+# Optional: explicit path to the crystalkit repository root
+# Default: crystalkit auto-detects it by walking up from the binary
+# CRYSTALKIT_ROOT=/opt/crystalkit

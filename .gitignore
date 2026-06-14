@@ -1,0 +1,22 @@
+# Compiled CLI binaries (built from source via `go build`)
+Crystal-Palace-Kit/palacekit/palacekit
+Sleep-Mask-Kit/maskkit/maskkit
+Loader-Kit/loadkit/loadkit
+Crystal-Palace-Kit/crystalkit/crystalkit
+Inject-Kit/injectkit/injectkit
+
+# COFF objects and raw shellcode blobs
+*.o
+*.bin
+*.enc
+
+# Compiled Windows DLLs and EXEs (cross-compiled artifacts)
+*.dll
+*.exe
+
+# Per-kit build output directories
+*/bin/
+*/build/
+
+# Go module cache
+go.sum

