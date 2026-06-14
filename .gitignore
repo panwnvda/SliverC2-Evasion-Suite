@@ -15,8 +15,8 @@ Inject-Kit/injectkit/injectkit
 *.exe
 
 # Per-kit build output directories
-*/bin/
-*/build/
+bin/
+build/
 
 # Go module cache
 go.sum
