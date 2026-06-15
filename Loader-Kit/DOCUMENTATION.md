@@ -531,9 +531,8 @@ Package `load.x64.dll` + `extension.json` into a Sliver extension tarball.
 The tarball structure:
 ```
 load-0.1.0.tar.gz
-└── load/
-    ├── extension.json
-    └── load.x64.dll
+├── ./extension.json
+└── ./load.x64.dll
 ```
 
 ### `loadkit serve`
@@ -760,7 +759,7 @@ Check the Makefile in `c/load/Makefile`.
 
 ### `extensions install` fails in Sliver: "invalid extension"
 
-The tarball must contain a directory named `load/` with `extension.json` and `load.x64.dll` inside. Run `loadkit bundle` to regenerate the tarball.
+The tarball must contain `./extension.json` and `./load.x64.dll` at the root (no subdirectory). Run `loadkit bundle` to regenerate the tarball.
 
 ### `load url=... key=...` returns "WinHTTP error"
 

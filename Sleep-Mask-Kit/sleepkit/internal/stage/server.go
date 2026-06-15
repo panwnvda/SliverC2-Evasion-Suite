@@ -12,7 +12,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
-	"net"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -28,6 +27,9 @@ type Server struct {
 }
 
 // NewServer creates a one-shot HTTPS server for the given payload.
+// The random URL path is generated at creation time and is available via Path()
+// before the server starts — call Path() before building mask.exe so the
+// compiled-in URL and the server path match.
 func NewServer(data []byte, port int) *Server {
 	pathBytes := make([]byte, 8)
 	rand.Read(pathBytes) //nolint:errcheck
@@ -37,6 +39,9 @@ func NewServer(data []byte, port int) *Server {
 		path: "/" + hex.EncodeToString(pathBytes),
 	}
 }
+
+// Path returns the random URL path this server will serve on.
+func (s *Server) Path() string { return s.path }
 
 // ListenAndServe starts the HTTPS server and blocks until the payload has been
 // served once (or an error occurs). Prints the full URL before blocking.
@@ -67,13 +72,6 @@ func (s *Server) ListenAndServe() error {
 			srv.Shutdown(context.Background()) //nolint:errcheck
 		}()
 	})
-
-	addrs, _ := net.InterfaceAddrs()
-	for _, a := range addrs {
-		if ip, ok := a.(*net.IPNet); ok && !ip.IP.IsLoopback() && ip.IP.To4() != nil {
-			fmt.Printf("[+] Payload URL: https://%s:%d%s\n", ip.IP, s.port, s.path)
-		}
-	}
 
 	if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
 		return err

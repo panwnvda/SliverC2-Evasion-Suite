@@ -115,7 +115,7 @@ Use `--format shellcode`, not `--format shared`. A DLL would start a second Go r
 Output:
 ```
 [*] Shellcode: 589824 bytes
-[+] Loader: 3549 bytes → build/palace.bin
+[+] Loader: 4218 bytes → build/palace.bin
 ```
 
 The `loader.spec` file instructs the linker to:
@@ -221,7 +221,7 @@ Manually XOR-encrypt a file (for testing/debugging).
 
 ```
 load "bin/loader.x64.o"        ← parse COFF, merge .text into code region
-    make pic +gofirst           ← rotate `go` symbol to offset 0
+    make pic +gofirst +optimize ← rotate `go` symbol to offset 0; +optimize is a Crystal Palace hint (no-op in PalaceKit)
 
 dfr "resolve" "ror13"          ← record ROR13 as the resolve strategy (no-op)
 

