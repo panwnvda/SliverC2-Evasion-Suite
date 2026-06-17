@@ -51,7 +51,8 @@ static PEB *get_peb(void) {
 }
 
 /* Walk the PEB module list, hash each exported function name,
-   return the function pointer when the hash matches.          */
+ * return the function pointer when the hash matches.
+ * Called from PalaceKit-emitted DFR thunks (one per MODULE$FUNC symbol).  */
 void *patch_resolve(uint32_t target_hash) {
     PEB *peb = get_peb();
     LIST_ENTRY *head = &peb->Ldr->InLoadOrderModuleList;
@@ -88,33 +89,28 @@ void *patch_resolve(uint32_t target_hash) {
     return NULL;
 }
 
-/* ── ROR13 hash constants ── */
-#define HASH_NtAllocateVirtualMemory  0xD33BCABD
-#define HASH_NtProtectVirtualMemory   0x8C394D89
-#define HASH_NtCreateThreadEx         0x4D1DEB74
-#define HASH_NtWaitForSingleObject    0xAE06C1B2
-#define HASH_NtFreeVirtualMemory      0xDB63B5AB
-#define HASH_RtlExitUserThread        0xFF7F061A
-#define HASH_VirtualAlloc             0x91AFCA54
-#define HASH_VirtualProtect           0x7946C61B
-#define HASH_VirtualFree              0x030633AC
-#define HASH_LoadLibraryA             0xEC0E4E8E
-#define HASH_GetProcAddress           0x7C0DFCAA
-
-/* Global function pointers */
+/* Legacy globals — kept for ABI compatibility with downstream components.
+ * The DFR thunks PalaceKit emits don't read these; they call patch_resolve
+ * per-call. resolve_all() pre-populates them so that any code still using
+ * the global-pointer pattern continues to work.                          */
 NtAllocateVirtualMemory_t  _NtAllocateVirtualMemory  = NULL;
 NtProtectVirtualMemory_t   _NtProtectVirtualMemory   = NULL;
 NtCreateThreadEx_t         _NtCreateThreadEx         = NULL;
 NtWaitForSingleObject_t    _NtWaitForSingleObject    = NULL;
 NtFreeVirtualMemory_t      _NtFreeVirtualMemory      = NULL;
 RtlExitUserThread_t        _RtlExitUserThread        = NULL;
+HMODULE(WINAPI *_LoadLibraryA)(LPCSTR) = NULL;
 
-LPVOID (WINAPI *_VirtualAlloc)(LPVOID, SIZE_T, DWORD, DWORD)         = NULL;
-BOOL   (WINAPI *_VirtualProtect)(LPVOID, SIZE_T, DWORD, PDWORD)      = NULL;
-BOOL   (WINAPI *_VirtualFree)(LPVOID, SIZE_T, DWORD)                 = NULL;
-HMODULE(WINAPI *_LoadLibraryA)(LPCSTR)                               = NULL;
+/* DFR hash constants — duplicates of what PalaceKit's thunks bake in. */
+#define HASH_NtAllocateVirtualMemory  0xD33BCABDu
+#define HASH_NtProtectVirtualMemory   0x8C394D89u
+#define HASH_NtCreateThreadEx         0x4D1DEB74u
+#define HASH_NtWaitForSingleObject    0xAE06C1B2u
+#define HASH_NtFreeVirtualMemory      0xDB63B5ABu
+#define HASH_RtlExitUserThread        0xFF7F061Au
+#define HASH_LoadLibraryA             0xEC0E4E8Eu
 
-/* Called once at startup to populate all function pointers */
+/* Optional: populate global pointers — safe no-op for DFR-only callers. */
 void resolve_all(void) {
     _NtAllocateVirtualMemory = (NtAllocateVirtualMemory_t)patch_resolve(HASH_NtAllocateVirtualMemory);
     _NtProtectVirtualMemory  = (NtProtectVirtualMemory_t) patch_resolve(HASH_NtProtectVirtualMemory);
@@ -122,8 +118,5 @@ void resolve_all(void) {
     _NtWaitForSingleObject   = (NtWaitForSingleObject_t)  patch_resolve(HASH_NtWaitForSingleObject);
     _NtFreeVirtualMemory     = (NtFreeVirtualMemory_t)    patch_resolve(HASH_NtFreeVirtualMemory);
     _RtlExitUserThread       = (RtlExitUserThread_t)      patch_resolve(HASH_RtlExitUserThread);
-    _VirtualAlloc            = (LPVOID(WINAPI*)(LPVOID, SIZE_T, DWORD, DWORD))    patch_resolve(HASH_VirtualAlloc);
-    _VirtualProtect          = (BOOL(WINAPI*)(LPVOID, SIZE_T, DWORD, PDWORD))     patch_resolve(HASH_VirtualProtect);
-    _VirtualFree             = (BOOL(WINAPI*)(LPVOID, SIZE_T, DWORD))             patch_resolve(HASH_VirtualFree);
-    _LoadLibraryA            = (HMODULE(WINAPI*)(LPCSTR))                         patch_resolve(HASH_LoadLibraryA);
+    _LoadLibraryA            = (HMODULE(WINAPI*)(LPCSTR)) patch_resolve(HASH_LoadLibraryA);
 }

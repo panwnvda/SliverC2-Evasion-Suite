@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"golang.org/x/crypto/chacha20"
+
 	"palacekit/internal/coff"
 	"palacekit/internal/link"
 )
@@ -48,6 +50,12 @@ type evalState struct {
 	exports  map[string]int // exportfunc tag → code offset
 	tagSeq   int
 	tagNames map[string]int // exportfunc name → tag id
+
+	// Crystal Palace DFR / hook state — populated by attach/preserve/addhook.
+	// Passed to the linker at Finish() time so it can rewrite relocations.
+	attachMap   map[string]string            // extern symbol → local hook symbol
+	preserveMap map[string]map[string]bool   // extern symbol → set of containing functions exempt from attach
+	addHooks    []link.AddHookEntry          // PICO runtime hook table entries
 }
 
 func (e *Evaluator) Run(specPath string) (*Result, error) {
@@ -71,10 +79,12 @@ func (e *Evaluator) eval(src string, specPath string) (*Result, error) {
 	lines := strings.Split(src, "\n")
 
 	st := &evalState{
-		linker:   link.New(),
-		vars:     make(map[string][]byte),
-		exports:  make(map[string]int),
-		tagNames: make(map[string]int),
+		linker:      link.New(),
+		vars:        make(map[string][]byte),
+		exports:     make(map[string]int),
+		tagNames:    make(map[string]int),
+		attachMap:   make(map[string]string),
+		preserveMap: make(map[string]map[string]bool),
 	}
 	// Copy pre-set variables (e.g. $DLL)
 	for k, v := range e.initVars {
@@ -109,6 +119,17 @@ func (e *Evaluator) eval(src string, specPath string) (*Result, error) {
 		}
 	}
 
+	// Pass DFR/hook config to the linker before finalization.
+	if len(st.attachMap) > 0 {
+		st.linker.SetAttachments(st.attachMap)
+	}
+	if len(st.preserveMap) > 0 {
+		st.linker.SetPreserves(st.preserveMap)
+	}
+	if len(st.addHooks) > 0 {
+		st.linker.SetAddHooks(st.addHooks)
+	}
+
 	img := st.linker.Finish()
 	out, err := e.assemble(img, st)
 	if err != nil {
@@ -140,14 +161,17 @@ func (e *Evaluator) execLine(line string, allLines []string, st *evalState, base
 		// make pic / make object — Crystal Palace compiler mode hints; no-op here
 		return nil
 	case "attach":
-		// attach "DLL$Func" "_localName" — record for documentation; C code uses direct calls
-		return nil
+		return e.cmdAttach(tokens, st)
+	case "preserve":
+		return e.cmdPreserve(tokens, st)
 	case "generate":
 		return e.cmdGenerate(tokens, st)
 	case "push":
 		return e.cmdPush(tokens, st)
 	case "xor":
 		return e.cmdXor(tokens, st)
+	case "chacha20":
+		return e.cmdChaCha20(tokens, st)
 	case "preplen":
 		return e.cmdPrepLen(st)
 	case "link":
@@ -157,8 +181,7 @@ func (e *Evaluator) execLine(line string, allLines []string, st *evalState, base
 	case "exportfunc":
 		return e.cmdExportFunc(tokens, st)
 	case "addhook":
-		// addhook "DLL$Func" "_localName" — stubs in pico.c handle this
-		return nil
+		return e.cmdAddHook(tokens, st)
 	case "linkfunc":
 		// linkfunc "sym" — treat binary blob's symbol as a function
 		return nil
@@ -384,37 +407,102 @@ func (e *Evaluator) assemble(img *link.LinkedImage, st *evalState) ([]byte, erro
 	return buildLoaderShellcode(img, st)
 }
 
-// PICO blob format (simplified, no TCG):
-// [4]total_size [4]num_exports [num_exports × {[4]tag [4]code_offset}] [code bytes]
+// debug
+var Debug = false
+
+// PICO blob format v2:
+//   [4]  total_size
+//   [4]  num_exports
+//   [4]  num_hooks (addhook entries)
+//   [4]  hooks_table_offset (relative to PICO start; 0 if num_hooks == 0)
+//   [num_exports × {[4]tag [4]code_offset}]
+//   [code bytes]
+//   [num_hooks × {[4]ror13_hash [4]hook_code_offset}]   ← appended after code
+// The PICO's __resolve_hook(hash) intrinsic reads the table from the blob
+// header at runtime and returns the matching hook function pointer.
 func buildPICO(img *link.LinkedImage, st *evalState) ([]byte, error) {
-	numExports := len(st.tagNames)
-	codeOff := 8 + numExports*8
-	total := codeOff + len(img.Code)
+	// Build deduped export list: one entry per exportfunc declaration.
+	// st.tagNames double-counts (funcName + tagName both map to the same id).
+	type expEntry struct {
+		name string
+		tag  int
+	}
+	var exports []expEntry
+	seen := make(map[int]bool)
+	for name, tag := range st.tagNames {
+		if seen[tag] {
+			continue
+		}
+		// Prefer the actual function name (no "__tag_" prefix) — that's the
+		// PICO export operators call. The "__tag_X" alias is a C helper.
+		if strings.HasPrefix(name, "__tag_") {
+			continue
+		}
+		exports = append(exports, expEntry{name: name, tag: tag})
+		seen[tag] = true
+	}
+	// Backfill any tag that only had a __tag_X entry (no plain funcName).
+	for name, tag := range st.tagNames {
+		if seen[tag] {
+			continue
+		}
+		exports = append(exports, expEntry{name: name, tag: tag})
+		seen[tag] = true
+	}
+
+	numExports := len(exports)
+	numHooks := len(st.addHooks)
+	if Debug {
+		fmt.Fprintf(os.Stderr, "[pico] buildPICO: %d exports, %d hooks\n", numExports, numHooks)
+	}
+	headerSize := 16
+	tableOff := headerSize
+	codeOff := tableOff + numExports*8
+	codeLen := len(img.Code)
+	hookTableOff := codeOff + codeLen
+	hookTableSize := numHooks * 8
+	total := hookTableOff + hookTableSize
 
 	buf := make([]byte, total)
 	binary.LittleEndian.PutUint32(buf[0:], uint32(total))
 	binary.LittleEndian.PutUint32(buf[4:], uint32(numExports))
+	binary.LittleEndian.PutUint32(buf[8:], uint32(numHooks))
+	if numHooks > 0 {
+		binary.LittleEndian.PutUint32(buf[12:], uint32(hookTableOff))
+	}
 
-	i := 0
-	for name, tagID := range st.tagNames {
-		// Find function offset in code
-		off := img.SymbolOffset(name)
+	for i, ent := range exports {
+		off := img.SymbolOffset(ent.name)
 		if off < 0 {
-			off = 0 // stub at offset 0
+			off = 0
 		}
-		binary.LittleEndian.PutUint32(buf[8+i*8:], uint32(tagID))
-		binary.LittleEndian.PutUint32(buf[8+i*8+4:], uint32(int(codeOff)+int(off)))
-		i++
+		binary.LittleEndian.PutUint32(buf[tableOff+i*8:], uint32(ent.tag))
+		binary.LittleEndian.PutUint32(buf[tableOff+i*8+4:], uint32(codeOff+int(off)))
 	}
 	copy(buf[codeOff:], img.Code)
+
+	// Append the runtime hook table — one entry per addhook directive.
+	// Hook code offsets are absolute within the PICO blob so __resolve_hook
+	// can return them as PICO-base + offset without further fix-up.
+	for j, entry := range st.addHooks {
+		hookOff := img.SymbolOffset(entry.HookSym)
+		if hookOff < 0 {
+			// Hook symbol not present — encode a 0 offset so the runtime
+			// intrinsic returns NULL for this hash.
+			hookOff = 0
+		}
+		binary.LittleEndian.PutUint32(buf[hookTableOff+j*8:], entry.Hash)
+		binary.LittleEndian.PutUint32(buf[hookTableOff+j*8+4:], uint32(codeOff+int(hookOff)))
+	}
 	return buf, nil
 }
 
 // magic markers for named sections — must match constants in loader.h
 var namedSectionMagic = map[string]uint32{
-	"dll":  0xC001B008,
-	"mask": 0xC001B009,
-	"pico": 0xC001B007,
+	"dll":   0xC001B008,
+	"mask":  0xC001B009,
+	"pico":  0xC001B007,
+	"nonce": 0xC001B00A,
 }
 
 // buildLoaderShellcode assembles the main loader shellcode.
@@ -441,7 +529,7 @@ func buildLoaderShellcode(img *link.LinkedImage, st *evalState) ([]byte, error) 
 	// find_resource_by_magic() scans for the magic and returns a pointer
 	// to the byte immediately following it (= the RESOURCE struct).
 	magicBuf := make([]byte, 4)
-	for _, name := range []string{"dll", "mask", "pico"} {
+	for _, name := range []string{"dll", "mask", "nonce", "pico"} {
 		d, ok := img.Named[name]
 		if !ok || len(d) == 0 {
 			continue
@@ -531,6 +619,98 @@ func tokenize(line string) []string {
 
 func unquote(s string) string {
 	return strings.Trim(s, `"'`)
+}
+
+// cmdAttach records a DFR rewrite: at link time, any unresolved external
+// matching `extern` is resolved to the local hook symbol `localHook`.
+//   attach "KERNEL32$VirtualAlloc" "_HookedVirtualAlloc"
+func (e *Evaluator) cmdAttach(tokens []string, st *evalState) error {
+	if len(tokens) < 3 {
+		return fmt.Errorf("attach requires extern symbol and local hook name")
+	}
+	st.attachMap[unquote(tokens[1])] = unquote(tokens[2])
+	return nil
+}
+
+// cmdPreserve exempts callsites inside a specific function from an attach
+// rewrite. Used so the hook itself can still reach the original API.
+//   preserve "KERNEL32$VirtualAlloc" "_HookedVirtualAlloc"
+func (e *Evaluator) cmdPreserve(tokens []string, st *evalState) error {
+	if len(tokens) < 3 {
+		return fmt.Errorf("preserve requires extern symbol and containing function")
+	}
+	extern := unquote(tokens[1])
+	containing := unquote(tokens[2])
+	if st.preserveMap[extern] == nil {
+		st.preserveMap[extern] = make(map[string]bool)
+	}
+	st.preserveMap[extern][containing] = true
+	return nil
+}
+
+// cmdAddHook records a runtime hash → hook function entry that the spec
+// assembler embeds into the PICO blob for __resolve_hook to consult.
+//   addhook "KERNEL32$LoadLibraryA" "_LoadLibraryA"
+func (e *Evaluator) cmdAddHook(tokens []string, st *evalState) error {
+	if len(tokens) < 3 {
+		return fmt.Errorf("addhook requires API symbol and local hook name")
+	}
+	apiSym := unquote(tokens[1])
+	hookSym := unquote(tokens[2])
+
+	// API symbol is "MODULE$FunctionName" — hash just the function name.
+	dollar := strings.Index(apiSym, "$")
+	funcName := apiSym
+	if dollar >= 0 {
+		funcName = apiSym[dollar+1:]
+	}
+	st.addHooks = append(st.addHooks, link.AddHookEntry{
+		Hash:    ror13Hash(funcName),
+		HookSym: hookSym,
+	})
+	return nil
+}
+
+// cmdChaCha20 encrypts top of stack with ChaCha20.
+// Usage:  chacha20 $KEY $NONCE
+//   $KEY    must be 32 bytes (use `generate $KEY 32`)
+//   $NONCE  must be 12 bytes (use `generate $NONCE 12`)
+// Stream cipher → output length == input length, preserving the RESOURCE layout.
+func (e *Evaluator) cmdChaCha20(tokens []string, st *evalState) error {
+	if len(st.stack) == 0 {
+		return fmt.Errorf("chacha20: empty stack")
+	}
+	if len(tokens) < 3 {
+		return fmt.Errorf("chacha20 requires $KEY and $NONCE variables")
+	}
+	key, ok := st.vars[tokens[1]]
+	if !ok || len(key) != 32 {
+		return fmt.Errorf("chacha20: $KEY must be 32 bytes (got %d)", len(key))
+	}
+	nonce, ok := st.vars[tokens[2]]
+	if !ok || len(nonce) != 12 {
+		return fmt.Errorf("chacha20: $NONCE must be 12 bytes (got %d)", len(nonce))
+	}
+	cipher, err := chacha20.NewUnauthenticatedCipher(key, nonce)
+	if err != nil {
+		return fmt.Errorf("chacha20 init: %w", err)
+	}
+	top := &st.stack[len(st.stack)-1]
+	out := make([]byte, len(top.data))
+	cipher.XORKeyStream(out, top.data)
+	top.data = out
+	return nil
+}
+
+// ror13Hash computes the standard ROR13 hash used by the loader's PEB walker.
+// Must match the algorithm in services.c.
+func ror13Hash(s string) uint32 {
+	var h uint32
+	for i := 0; i < len(s); i++ {
+		h = (h >> 13) | (h << 19)
+		h += uint32(s[i])
+	}
+	return h
 }
 
 func isCOFF(data []byte) bool {

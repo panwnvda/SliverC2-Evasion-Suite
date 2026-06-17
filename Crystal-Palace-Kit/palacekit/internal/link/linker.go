@@ -14,10 +14,13 @@ package link
 import (
 	"encoding/binary"
 	"fmt"
+	"os"
+	"sort"
 	"strings"
 
 	"palacekit/internal/coff"
 )
+
 
 // LinkedImage is the result of linking one or more COFF objects.
 type LinkedImage struct {
@@ -49,11 +52,27 @@ type symbolEntry struct {
 type pendingReloc struct {
 	writeRegion string // "text", "rdata", "data", named-section name
 	writeOff    uint32 // region-relative byte offset of field to patch
-	symRegion   string // "" = unresolved extern
+	symRegion   string // "" = unresolved extern (see externName)
 	symOff      uint32 // region-relative offset of target
+	externName  string // original symbol name (set when symRegion == "")
 	relocType   uint16
 	addend      int64  // existing value at write site (for ADDR variants)
 	pcAdj       uint32 // bytes field-start → next instruction (REL32 variants)
+}
+
+// AddHookEntry is a runtime hash-to-hook table entry that the PICO consults
+// from inside its __resolve_hook intrinsic.
+type AddHookEntry struct {
+	Hash    uint32 // ROR13(funcName)
+	HookSym string // local hook symbol whose offset gets baked into the table
+}
+
+// funcRange records a function symbol's byte range in .text so `preserve`
+// can scope exemptions by containing function.
+type funcRange struct {
+	name  string
+	start uint32
+	end   uint32
 }
 
 type Linker struct {
@@ -65,15 +84,54 @@ type Linker struct {
 	exports map[string]uint32
 	symbols map[string]symbolEntry
 	pending []pendingReloc
+
+	// DFR / hook configuration set by the spec evaluator before Finish().
+	attachMap   map[string]string          // extern → local hook
+	preserveMap map[string]map[string]bool // extern → set of containing fn names to exempt
+	addHooks    []AddHookEntry             // PICO runtime hash table
+
+	// Symbol range tracking for `preserve` scope resolution.
+	textFuncs []funcRange
 }
 
 func New() *Linker {
 	return &Linker{
-		named:   make(map[string][]byte),
-		exports: make(map[string]uint32),
-		symbols: make(map[string]symbolEntry),
+		named:       make(map[string][]byte),
+		exports:     make(map[string]uint32),
+		symbols:     make(map[string]symbolEntry),
+		attachMap:   make(map[string]string),
+		preserveMap: make(map[string]map[string]bool),
 	}
 }
+
+// SetAttachments installs the DFR rewrite map from the spec evaluator.
+func (l *Linker) SetAttachments(m map[string]string) {
+	for k, v := range m {
+		l.attachMap[k] = v
+	}
+}
+
+// SetPreserves installs the preserve map: extern → set of containing function
+// names whose callsites should bypass the attach redirect.
+func (l *Linker) SetPreserves(m map[string]map[string]bool) {
+	for k, v := range m {
+		if l.preserveMap[k] == nil {
+			l.preserveMap[k] = make(map[string]bool)
+		}
+		for fn := range v {
+			l.preserveMap[k][fn] = true
+		}
+	}
+}
+
+// SetAddHooks installs the PICO runtime hook table entries.
+func (l *Linker) SetAddHooks(hooks []AddHookEntry) {
+	l.addHooks = append(l.addHooks, hooks...)
+}
+
+// AddHooks returns the current runtime hook table — the spec assembler uses
+// this to emit the table bytes into the PICO blob.
+func (l *Linker) AddHooks() []AddHookEntry { return l.addHooks }
 
 // MergeObject merges a parsed COFF object into the image (pass 1 only).
 // modifiers: "pic", "+gofirst", "+optimize", "+disco", "object", "merge"
@@ -123,6 +181,8 @@ func (l *Linker) MergeObject(obj *coff.Object, modifiers []string) error {
 	}
 
 	// Pass 1b: register symbols with region-relative offsets.
+	// Also collect text-section function ranges for `preserve` scope checks.
+	var textMarks []funcRange
 	for _, sym := range obj.Symbols {
 		name := sym.SymbolName(obj.Strings)
 		if sym.SectionNumber <= 0 || name == "" {
@@ -136,11 +196,26 @@ func (l *Linker) MergeObject(obj *coff.Object, modifiers []string) error {
 		if region == "skip" {
 			continue
 		}
-		l.symbols[name] = symbolEntry{
-			section: region,
-			offset:  sectionBase[secIdx] + sym.Value,
+		absOff := sectionBase[secIdx] + sym.Value
+		l.symbols[name] = symbolEntry{section: region, offset: absOff}
+
+		// Track external + static symbols in .text as candidate function starts.
+		if region == "text" && (sym.StorageClass == coff.IMAGE_SYM_CLASS_EXTERNAL ||
+			sym.StorageClass == coff.IMAGE_SYM_CLASS_STATIC) {
+			textMarks = append(textMarks, funcRange{name: name, start: absOff})
 		}
 	}
+	// Sort marks by start offset, compute end offsets as the next mark's start
+	// (or the current code length for the last mark).
+	sort.SliceStable(textMarks, func(i, j int) bool { return textMarks[i].start < textMarks[j].start })
+	for i := range textMarks {
+		end := uint32(len(l.code))
+		if i+1 < len(textMarks) {
+			end = textMarks[i+1].start
+		}
+		textMarks[i].end = end
+	}
+	l.textFuncs = append(l.textFuncs, textMarks...)
 
 	// Pass 1c: collect relocations (deferred).
 	for i, sec := range obj.Sections {
@@ -177,6 +252,7 @@ func (l *Linker) MergeObject(obj *coff.Object, modifiers []string) error {
 				writeOff:    writeOff,
 				symRegion:   symRegion,
 				symOff:      symOff,
+				externName:  symName,
 				relocType:   rel.Type,
 				addend:      addend,
 				pcAdj:       pcAdjFor(rel.Type),
@@ -251,9 +327,190 @@ func (l *Linker) NamedSection(name string) ([]byte, bool) {
 	return d, ok
 }
 
+// Verbose enables stderr logs from resolveDFR explaining each redirect.
+var Verbose = false
+
+// resolveDFR walks pending relocations once before the main relocation pass,
+// resolves unresolved MODULE$FUNC-style externs to either:
+//   1. the local hook symbol named by `attach` (unless callsite is inside a
+//      preserved function for that extern), or
+//   2. a freshly-generated default thunk that calls patch_resolve(hash) and
+//      tail-jumps to the resolved API.
+// This is the Crystal Palace DFR system.
+func (l *Linker) resolveDFR() {
+	// Step 1: collect unresolved DFR externs that any reloc still references.
+	usedExterns := make(map[string]bool)
+	for i := range l.pending {
+		if l.pending[i].symRegion != "" {
+			continue
+		}
+		name := l.pending[i].externName
+		if isDFRSymbol(name) {
+			usedExterns[name] = true
+		}
+	}
+
+	// Step 2: emit a default thunk at end of code for every DFR extern that is
+	// either (a) not attached at all, or (b) attached but has at least one
+	// preserved callsite. Record the thunk's offset.
+	thunkOffsets := make(map[string]uint32)
+	patchResolve, hasPR := l.symbols["patch_resolve"]
+	for extern := range usedExterns {
+		_, hasAttach := l.attachMap[extern]
+		_, hasPreserves := l.preserveMap[extern]
+		if !hasAttach || hasPreserves {
+			if !hasPR || patchResolve.section != "text" {
+				// patch_resolve isn't linked; we can't build a thunk.
+				continue
+			}
+			thunkOffsets[extern] = l.emitThunk(extern, patchResolve.offset)
+		}
+	}
+
+	// Step 3: resolve each pending DFR relocation.
+	for i := range l.pending {
+		if l.pending[i].symRegion != "" {
+			continue
+		}
+		extern := l.pending[i].externName
+		if !isDFRSymbol(extern) {
+			continue
+		}
+		// Determine callsite's containing function (only meaningful for
+		// .text writes).
+		var callsiteFn string
+		if l.pending[i].writeRegion == "text" {
+			callsiteFn = l.functionAt(l.pending[i].writeOff)
+		}
+
+		hook, attached := l.attachMap[extern]
+		isPreserved := false
+		if attached {
+			if preserves, ok := l.preserveMap[extern]; ok && preserves[callsiteFn] {
+				isPreserved = true
+			}
+		}
+
+		if attached && !isPreserved {
+			if hookSym, ok := l.symbols[hook]; ok {
+				if Verbose {
+					fmt.Fprintf(os.Stderr, "[dfr] %s @ %s → attach %s\n",
+						extern, callsiteFn, hook)
+				}
+				l.pending[i].symRegion = hookSym.section
+				l.pending[i].symOff = hookSym.offset
+				continue
+			}
+		}
+		if off, ok := thunkOffsets[extern]; ok {
+			if Verbose {
+				note := "thunk"
+				if isPreserved {
+					note = "thunk (preserved)"
+				}
+				fmt.Fprintf(os.Stderr, "[dfr] %s @ %s → %s\n", extern, callsiteFn, note)
+			}
+			l.pending[i].symRegion = "text"
+			l.pending[i].symOff = off
+		}
+	}
+}
+
+// functionAt returns the name of the .text function containing the given
+// region-relative offset, or the empty string if no function spans it.
+func (l *Linker) functionAt(off uint32) string {
+	for _, fn := range l.textFuncs {
+		if off >= fn.start && off < fn.end {
+			return fn.name
+		}
+	}
+	return ""
+}
+
+// emitThunk appends a default PEB-resolver thunk to the end of .text for the
+// given DFR symbol and returns its byte offset. The thunk:
+//   push rcx               ; preserve caller arg1
+//   sub  rsp, 0x28         ; shadow + alignment
+//   mov  ecx, <ror13hash>  ; arg1 to patch_resolve
+//   call patch_resolve     ; rax = resolved API
+//   add  rsp, 0x28
+//   pop  rcx
+//   jmp  rax
+func (l *Linker) emitThunk(externName string, patchResolveOff uint32) uint32 {
+	dollar := strings.Index(externName, "$")
+	funcName := externName
+	if dollar >= 0 {
+		funcName = externName[dollar+1:]
+	}
+	hash := Ror13Hash(funcName)
+
+	thunkOff := uint32(len(l.code))
+	// Build the thunk bytes (22 bytes total).
+	thunk := []byte{
+		0x51,                         // push rcx                       (offset 0)
+		0x48, 0x83, 0xEC, 0x28,       // sub rsp, 0x28                  (offset 1)
+		0xB9, 0, 0, 0, 0,             // mov ecx, hash                  (offset 5)
+		0xE8, 0, 0, 0, 0,             // call patch_resolve (REL32)     (offset 10)
+		0x48, 0x83, 0xC4, 0x28,       // add rsp, 0x28                  (offset 15)
+		0x59,                         // pop rcx                        (offset 19)
+		0xFF, 0xE0,                   // jmp rax                        (offset 20)
+	}
+	binary.LittleEndian.PutUint32(thunk[6:], hash)
+
+	// REL32 from after the call (thunk_off + 15) → patch_resolve.
+	rel := int32(patchResolveOff) - int32(thunkOff+15)
+	binary.LittleEndian.PutUint32(thunk[11:], uint32(rel))
+
+	l.code = append(l.code, thunk...)
+
+	// Register the thunk as a synthetic symbol so future symbol lookups
+	// (and the +gofirst rotation pass) treat it like any other code symbol.
+	l.symbols["__dfr_thunk$"+externName] = symbolEntry{section: "text", offset: thunkOff}
+
+	// Update textFuncs so functionAt() correctly attributes any relocations
+	// inside the thunk to its synthetic name.
+	if len(l.textFuncs) > 0 {
+		l.textFuncs[len(l.textFuncs)-1].end = thunkOff
+	}
+	l.textFuncs = append(l.textFuncs, funcRange{
+		name:  "__dfr_thunk$" + externName,
+		start: thunkOff,
+		end:   uint32(len(l.code)),
+	})
+	return thunkOff
+}
+
+// isDFRSymbol reports whether a symbol name follows the Crystal Palace
+// MODULE$FUNCTION convention used for runtime API resolution.
+func isDFRSymbol(name string) bool {
+	if name == "" {
+		return false
+	}
+	dollar := strings.Index(name, "$")
+	if dollar <= 0 || dollar == len(name)-1 {
+		return false
+	}
+	return true
+}
+
+// Ror13Hash mirrors the algorithm in services.c so spec-side hash computation
+// stays in sync with runtime.
+func Ror13Hash(s string) uint32 {
+	var h uint32
+	for i := 0; i < len(s); i++ {
+		h = (h >> 13) | (h << 19)
+		h += uint32(s[i])
+	}
+	return h
+}
+
 // Finish applies +gofirst rotation and all deferred relocations,
 // then returns the final LinkedImage.
 func (l *Linker) Finish() *LinkedImage {
+	// Resolve DFR / attach / preserve before rotation so emitted thunks are
+	// included in the rotation pass below.
+	l.resolveDFR()
+
 	// +gofirst: rotate code so `go` is at offset 0.
 	if e, ok := l.symbols["go"]; ok && e.section == "text" && e.offset > 0 {
 		R := e.offset
@@ -285,7 +542,7 @@ func (l *Linker) Finish() *LinkedImage {
 	// Compute cumulative offsets for named sections (in the order they appear).
 	// Named sections are appended AFTER [code][rdata][data] in the final blob.
 	// The flat offset of named section X = cS + rS + dS + namedCumulative[X].
-	namedOrder := []string{"dll", "mask", "pico"}
+	namedOrder := []string{"dll", "mask", "nonce", "pico"}
 	namedCumBase := make(map[string]uint32)
 	cum := uint32(0)
 	for _, name := range namedOrder {

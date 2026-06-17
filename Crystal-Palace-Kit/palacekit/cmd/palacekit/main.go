@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"palacekit/internal/link"
 	"palacekit/internal/spec"
 )
 
@@ -57,6 +58,8 @@ var buildCmd = &cobra.Command{
 
 		// Inject $DLL variable into the spec evaluator by pre-loading
 		// it as a named section. The spec's `push $DLL` will pick it up.
+		link.Verbose = buildVerbose
+		spec.Debug = buildVerbose
 		ev := &spec.Evaluator{
 			Verbose: buildVerbose,
 		}
